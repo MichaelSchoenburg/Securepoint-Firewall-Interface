@@ -1,16 +1,123 @@
-# To import this Module: Import-Module .\Securepoint-Firewall-Interface.psm1
+# To import this Module: Import-Module .\Securepoint-Firewall-Interface.psd1
 
 # TODO:
-# Add logging.
-# Check if local IP is on 192.168.175.0/24 network.
-# Add capability to load configuration files.
-# Add function to check if default settings are set/settings are correct (check if cloud backup active).
+# More TODOs below (search for "# TODO").
+# Add logging
+# Check if local IP is on 192.168.175.0/24 network
+# Add capability to load configuration files
+# Add function to check if default settings are set/settings are correct (check if cloud backup active)
 
 # Manual Tasks:
 # Initial setup: assign license, name device, set date
 # Activate cloud backup
 
+function New-SFISession {
+    [CmdletBinding()]
+    param (
+        [Parameter(
+            Mandatory,
+            Position = 0
+            )]
+        [ipaddress]
+        $IpAddress
+    )
+
+    # Source of inspiration: https://sid-500.com/2017/12/09/powershell-find-out-whether-a-host-is-really-down-or-not-with-test-connectionlocalsubnet-ping-arp/
+    function Test-SFIConnection {
+        param (
+            [Parameter(
+                Mandatory = $True,
+                Position = 0
+            )]
+            [System.Net.IPAddress]
+            $IpAddress
+        )
+        
+        arp -d
+        $ping = Test-Connection -ComputerName $IpAddress -Count 3 -Quiet
+        $arp = [boolean](arp -a | Select-String "$IpAddress")
+
+        If ($ping -and $arp){
+            return @{
+                ExitCode = 0
+                Comment = 'Firewall is up.'
+            }
+        }
+        elseif ($ping -and !$arp){
+        return @{
+                ExitCode = 2
+                Comment = "Firewall is up, but possibly not on local subnet."
+            }
+        }
+        elseif (!$ping -and $arp){
+            return @{
+                ExitCode = 3
+                Comment = "Firewall not reachable. Possible Cause: Windows Firewall is blocking traffic."
+            }
+        }
+        else{
+            return @{
+                ExitCode = 1
+                Comment = "Firewall is down."
+            }
+        }
+    }
+
+    $Test = Test-SFIConnection -IpAddress $IpAddress
+    if ($Test.ExitCode -ne 0) {
+        throw "Can't connect to Securepoint firewall at $( $IpAddress ). Test result: $( $Test.Comment )" # Function will terminate
+    } else {
+        Write-Verbose "Firewall is reachable at $( $IpAddress )."
+    }
+
+    $cred = Get-Credential
+    $session = New-SSHSession -ComputerName $IpAddress -Credential $cred -AcceptKey
+    return $session
+}
+
+# TODO: This must not contain any defaults from ITCE, thus no default values should be set! There has to be a separate function for ITCE defaults!
 function Set-SFISettings {
+    [CmdletBinding()]
+    param (
+        [Parameter(
+            Mandatory = $true
+        )]
+        [SshSession]
+        $SFISession,
+
+        [Parameter(
+            Mandatory = $false,
+            Position = 0
+        )]
+        [ipaddress]
+        $FirewallIpAddress = '192.168.175.1',
+
+        [Parameter(
+            Mandatory = $false
+        )]
+        [switch]
+        $LoadDefaults,
+
+        [Parameter(
+            Mandatory = $false
+        )]
+        [string]
+        $GlobalContactPerson = 'IT-Center Engels',
+
+        [Parameter(
+            Mandatory = $false
+        )]
+        [string]
+        $GlobalContactEMailAddress = 'support@itc-engels.de',
+
+        [Parameter(
+            Mandatory = $false
+        )]
+        [ValidateSet('Deactivate','Log','LogAndDrop')]
+        [string]
+        $CyberDefenseCloud = 'LogAndDrop'
+    )
+
     <#
     .SYNOPSIS
         Set-SFISettings
@@ -40,322 +147,524 @@ function Set-SFISettings {
         For online help, type: "get-help Get-HotFix -online"
     #>
 
-#region INITIALIZATION
-<# 
-    Libraries, Modules, ...
-#>
+    if ($LoadDefaults -or $PSBoundParameters.ContainsKey('GlobalContactPerson')) {
+        # NETWORK > APPLIANCE SETTINGS > APPLIANCE SETTINGS > FIREWALL > Global contact person:
+        Invoke-SSHCommand -SSHSession $SFISession -Command "extc global set variable `"GLOB_ADMIN_NAME`" value [ `"$GlobalContactPerson`" ]"
+    }
 
-if (-not (Get-Module -ListAvailable -Name Posh-SSH)) {
-    Log "Installing Posh-SSH..."
-    Install-Module -Name Posh-SSH -Force -Confirm:$false -Scope CurrentUser
+    if ($LoadDefaults -or $PSBoundParameters.ContainsKey('GlobalContactEMailAddress')) {
+        # NETWORK > APPLIANCE SETTINGS > APPLIANCE SETTINGS > FIREWALL > Global email address:
+        Invoke-SSHCommand -SSHSession $SFISession -Command "extc global set variable `"GLOB_ADMIN_EMAIL`" value [ `"$GlobalContactEMailAddress`" ]"
+    }
+
+    # NETWORK > APPLIANCE SETTINGS > APPLIANCE SETTINGS > FIREWALL > Report language:
+    Invoke-SSHCommand -SSHSession $SFISession -Command 'extc global set variable "GLOB_LANGUAGE" value [ "DE" ]'
+
+    # NETWORK > APPLIANCE SETTINGS > APPLIANCE SETTINGS > DNS SERVER > Check Nameserver prior to local cache:
+    Invoke-SSHCommand -SSHSession $SFISession -Command 'extc global set variable "GLOB_NAMESERVER_ASK_REMOTE_FIRST" value "1"'
+
+    # NETWORK > APPLIANCE SETTINGS > APPLIANCE SETTINGS > DNS SERVER > Primary Nameserver >, Secondary Nameserver:
+    Invoke-SSHCommand -SSHSession $SFISession -Command 'extc global set variable "GLOB_NAMESERVER" value [ "8.8.8.8" "1.1.1.1" ]'
+
+    # NETWORK > APPLIANCE SETTINGS > APPLIANCE SETTINGS > TIME SETTINGS > Timezone:
+    Invoke-SSHCommand -SSHSession $SFISession -Command 'extc global set variable "GLOB_TIMEZONE" value [ "Europe/Berlin" ]'
+
+    # NETWORK > APPLIANCE SETTINGS > APPLIANCE SETTINGS > TIME SETTINGS > NTP Server:
+    Invoke-SSHCommand -SSHSession $SFISession -Command 'extc global set variable "GLOB_TIMEZONE" value [ "Europe/Berlin" ]'
+
+    # NETWORK > APPLIANCE SETTINGS > APPLIANCE SETTINGS > WEBSERVER
+    # Coming soon
+
+    # NETWORK > APPLIANCE SETTINGS > APPLIANCE SETTINGS > ADVANCED SETTINGS > Maximum Active Connections:
+    Invoke-SSHCommand -SSHSession $SFISession -Command 'extc value set application "securepoint_firewall" variable "IPCONNTRACK" value [ "0" ]'
+
+    # NETWORK > APPLIANCE SETTINGS > APPLIANCE SETTINGS > ADVANCED SETTINGS > Last Rule Logging:
+    Invoke-SSHCommand -SSHSession $SFISession -Command 'extc value set application "securepoint_firewall" variable "LASTRULE_LOGGING" value [ "1" ]'
+
+    # NETWORK > APPLIANCE SETTINGS > SYSTEM-WIDE PROXY > IP Address:
+    Invoke-SSHCommand -SSHSession $SFISession -Command 'extc global set variable "GLOB_HTTP_PARENT_PROXY_ADDR" value [ "" ]'
+
+    # NETWORK > APPLIANCE SETTINGS > SYSTEM-WIDE PROXY > Port:
+    # Coming soon
+
+    # NETWORK > APPLIANCE SETTINGS > SYSTEM-WIDE PROXY > User:
+    # Coming soon
+
+    # NETWORK > APPLIANCE SETTINGS > SYSTEM-WIDE PROXY > Password:
+    # Coming soon
+
+    # NETWORK > APPLIANCE SETTINGS > ADMINISTRATION:
+    Invoke-SSHCommand -SSHSession $SFISession -Command 'extc value set application "spresolverd" variable [ "MANAGER_HOST_LIST" ] value [ "centervision.spdns.de" ]'
+
+    # NETWORK > APPLIANCE SETTINGS > SYSLOG > Log the UTM hostname in the syslog messages:
+    Invoke-SSHCommand -SSHSession $SFISession -Command 'extc value set application "syslog" variable "WRITE_HOST" value [ "0" ]'
+
+    # NETWORK > APPLIANCE SETTINGS > SNMP > SNMP Version:
+    Invoke-SSHCommand -SSHSession $SFISession -Command 'extc value set application "snmpd" variable "ENABLE_SNMP_V1" value [ "0" ]'
+
+    # NETWORK > APPLIANCE SETTINGS > SNMP > SNMP Version:
+    Invoke-SSHCommand -SSHSession $SFISession -Command 'extc value set application "snmpd" variable "ENABLE_SNMP_V2" value [ "0" ]'
+
+    # NETWORK > APPLIANCE SETTINGS > SNMP > SNMP Version:
+    Invoke-SSHCommand -SSHSession $SFISession -Command 'extc value set application "snmpd" variable "ENABLE_SNMP_V3" value [ "0" ]'
+
+    # NETWORK > QOS > NETWORK INTERFACES > GENERAL > Mode:
+    Invoke-SSHCommand -SSHSession $SFISession -Command 'extc global set variable "GLOB_QOS_MODE" value [ "auto" ]'
+    Invoke-SSHCommand -SSHSession $SFISession -Command 'extc global set variable "GLOB_QOS_INTERFACE" value [ "" ]'
+
+    # Applications > HTTP PROXY > GENERAL > Proxy Port:
+    Invoke-SSHCommand -SSHSession $SFISession -Command 'extc value set application "http_proxy" variable "PROXY_PORT" value [ "8080" ]'
+
+    # Applications > HTTP PROXY > GENERAL > Outgoing Address:
+    Invoke-SSHCommand -SSHSession $SFISession -Command 'extc value set application "http_proxy" variable "OUTGOING_ADDR" value [ "" ]'
+
+    # Applications > HTTP PROXY > GENERAL > Forward requests to system-wide parent proxy:
+    Invoke-SSHCommand -SSHSession $SFISession -Command 'extc value set application "http_proxy" variable "ENABLE_FORWARD" value "0"'
+
+    # Applications > HTTP PROXY > GENERAL > Authentication method:
+    Invoke-SSHCommand -SSHSession $SFISession -Command 'extc value set application "http_proxy" variable "ENABLE_AUTH_LOCAL" value "0"'
+    Invoke-SSHCommand -SSHSession $SFISession -Command 'extc value set application "http_proxy" variable "ENABLE_AUTH_RADIUS" value "0"'
+    Invoke-SSHCommand -SSHSession $SFISession -Command 'extc value set application "http_proxy" variable "ENABLE_AUTH_NTLM" value "0"'
+    Invoke-SSHCommand -SSHSession $SFISession -Command 'extc value set application "http_proxy" variable "ENABLE_AUTH_NTLM" value "0"'
+
+    # Applications > HTTP PROXY > GENERAL > Allow access only from local sources:
+    Invoke-SSHCommand -SSHSession $SFISession -Command 'extc value set application "http_proxy" variable "RESTRICT_CLIENT_ACCESS" value [ "1" ]'
+
+    # Applications > HTTP PROXY > GENERAL > Allow access to local destinations:
+    Invoke-SSHCommand -SSHSession $SFISession -Command 'extc value set application "http_proxy" variable "DENY_LOCAL_DESTINATIONS" value [ "0" ]'
+
+    # Applications > HTTP PROXY > GENERAL > IPv4 DNS lookups preferred:
+    Invoke-SSHCommand -SSHSession $SFISession -Command 'extc value set application "http_proxy" variable "ENABLE_DNS_V4FIRST" value "1"'
+
+    # Applications > HTTP PROXY > GENERAL > Logging (Syslog local):
+    # Applications > HTTP PROXY > GENERAL > Logging (Statistics):
+    Invoke-SSHCommand -SSHSession $SFISession -Command 'extc value set application "http_proxy" variable "ENABLE_LOGGING" value [ "0" ]'
+
+    # Applications > HTTP PROXY > Authentication exceptions:
+    Invoke-SSHCommand -SSHSession $SFISession -Command 'extc value set application "http_proxy" variable "ENABLE_EXCEPTION_URL_LIST" value "0"'
+
+    # function Set-STISettingsTransparentMode {
+    # This only works after you have enabled SSL Interception!!
+
+    # function Set-STISettingsSslInterception {
+    # This only works after you have added a CA under certificate settings
+
+    # Applications > HTTP PROXY > TRANSPARENT MODE > Transparent Mode:
+    Invoke-SSHCommand -SSHSession $SFISession -Command 'extc value set application "http_proxy" variable "ENABLE_TRANSPARENT" value "1"'
+
+    # Applications > HTTP PROXY > TRANSPARENT MODE > Add Transparent Rule:
+    # Invoke-SSHCommand -SSHSession $SFISession -Command ''
+
+    # Applications > IDS / IPS > CYBER DEFENSE CLOUD > Threat Intelligence Filter > Log and drop connection:
+    if ($LoadDefaults -or $PSBoundParameters.ContainsKey('CyberDefenseCloud')) {
+        switch ($CyberDefenseCloud) {
+            'Deactivate' {
+                Invoke-SSHCommand -SSHSession $SFISession -Command 'rule implied group set implied_group "12" active "0"'
+                Invoke-SSHCommand -SSHSession $SFISession -Command 'rule implied rule set implied_group "12" implied_rule "0" active "1"'
+                Invoke-SSHCommand -SSHSession $SFISession -Command 'rule implied rule set implied_group "12" implied_rule "1" active "1"'
+                Invoke-SSHCommand -SSHSession $SFISession -Command 'rule implied group set implied_group "13" active "0"'
+                Invoke-SSHCommand -SSHSession $SFISession -Command 'rule implied rule set implied_group "13" implied_rule "0" active "0"'
+                Invoke-SSHCommand -SSHSession $SFISession -Command 'rule implied rule set implied_group "13" implied_rule "1" active "0"'
+            }
+            'Log' {
+                Invoke-SSHCommand -SSHSession $SFISession -Command 'rule implied group set implied_group "12" active "1"'
+                Invoke-SSHCommand -SSHSession $SFISession -Command 'rule implied rule set implied_group "12" implied_rule "0" active "1"'
+                Invoke-SSHCommand -SSHSession $SFISession -Command 'rule implied rule set implied_group "12" implied_rule "1" active "1"'
+                Invoke-SSHCommand -SSHSession $SFISession -Command 'rule implied group set implied_group "13" active "0"'
+                Invoke-SSHCommand -SSHSession $SFISession -Command 'rule implied rule set implied_group "13" implied_rule "0" active "0"'
+                Invoke-SSHCommand -SSHSession $SFISession -Command 'rule implied rule set implied_group "13" implied_rule "1" active "0"'
+            }
+            'LogAndDrop' {
+                Invoke-SSHCommand -SSHSession $SFISession -Command 'rule implied group set implied_group "12" active "0"'
+                Invoke-SSHCommand -SSHSession $SFISession -Command 'rule implied rule set implied_group "12" implied_rule "0" active "1"'
+                Invoke-SSHCommand -SSHSession $SFISession -Command 'rule implied rule set implied_group "12" implied_rule "1" active "1"'
+                Invoke-SSHCommand -SSHSession $SFISession -Command 'rule implied group set implied_group "13" active "1"'
+                Invoke-SSHCommand -SSHSession $SFISession -Command 'rule implied rule set implied_group "13" implied_rule "0" active "1"'
+                Invoke-SSHCommand -SSHSession $SFISession -Command 'rule implied rule set implied_group "13" implied_rule "1" active "1"'
+            }
+        }
+    }
 }
-if (-not (Get-Module -Name Posh-SSH)) {
-    Log "Importing Posh-SSH..."
-    Import-Module -Name Posh-SSH
+
+# TODO: This must not contain any defaults from ITCE, thus the entire IP address has to be "adjustable"!
+function New-SFIVlan {
+    [CmdletBinding()]
+    param (
+        [Parameter(
+            Mandatory = $true,
+            ValueFromPipelineByPropertyName
+        )]
+        [SSH.SshSession]
+        $SFISession,
+
+        [Parameter(
+            Mandatory = $true,
+            ValueFromPipelineByPropertyName
+        )]
+        [int]
+        [ValidateScript({($_ -le 255) -and ($_ -ge 0)})]
+        $SiteId,
+
+        [Parameter(
+            Mandatory = $false,
+            ValueFromPipelineByPropertyName
+        )]
+        [string]
+        [ValidateSet('A0','A1','A2','A3','eth0','eth1','eth2','eth3')]
+        $Interface = 'A1',
+
+        [Parameter(
+            Mandatory = $true,
+            ValueFromPipelineByPropertyName
+        )]
+        [int]
+        [ValidateRange(0,4095)]
+        $VlanId,
+
+        [Parameter(
+            Mandatory = $true,
+            ValueFromPipelineByPropertyName
+        )]
+        [string]
+        $VlanName,
+
+        [Parameter(
+            Mandatory = $false,
+            ValueFromPipelineByPropertyName
+        )]
+        [int]
+        [ValidateRange(0,255)]
+        $InterfaceIpFourthOktett = 1,
+
+        [Parameter(
+            Mandatory = $false,
+            ValueFromPipelineByPropertyName
+        )]
+        [int]
+        [ValidateRange(16,31)] # You can adjust this to suit your defaults
+        $SubnetmaskSuffix = 24
+    )
+
+    process {
+        Write-Verbose "Processing:"
+        Write-Verbose "SiteId = $( $SiteId )"
+        Write-Verbose "VlanParent = $( $interface ) ($( if ($PSBoundParameters.ContainsKey('VlanParent')) { 'specified' } else { 'default' } ))"
+        Write-Verbose "VlanId = $( $VlanId )"
+        Write-Verbose "VlanName = $( $VlanName )"
+        Write-Verbose "InterfaceIpFourthOktett = $( $InterfaceIpFourthOktett ) ($( if ($PSBoundParameters.ContainsKey('InterfaceIpFourthOktett')) { 'specified' } else { 'default' } ))"
+        Write-Verbose "SubnetmaskSuffix = $( $SubnetmaskSuffix ) ($( if ($PSBoundParameters.ContainsKey('SubnetmaskSuffix')) { 'specified' } else { 'default' } ))"
+
+        Invoke-SSHCommand -SSHSession $SFISession -Command "interface new name `"$( $interface ).$( $vlanId )`" type `"VLAN`" flags [ ] options [ `"vlan_id=$( $vlanId )`" `"vlan_parent=$( $interface )`" ]"
+
+        # TODO: check if the zone already exists and get ID of zone if so
+        # IF zone already exists:
+        # Invoke-SSHCommand -SSHSession $SFISession -Command "interface zone set id `"$( $zoneId )`" interface `"$( $interface ).$( $vlanId )`""
+        # Invoke-SSHCommand -SSHSession $SFISession -Command "interface zone set id `"$( $zoneId )`" interface `"$( $interface ).$( $vlanId )`""
+        # Invoke-SSHCommand -SSHSession $SFISession -Command "interface set name `"$( $interface ).$( $vlanId )`" flags [ ] options [ `"dyndns_hostname=`" `"dyndns_user=`" `"dyndns_password=*******`" `"dyndns_server=update.spdyn.de`" `"dyndns_mx=`" `"dyndns_ipv4=`" `"dyndns_ipv6=`" `"vlan_id=2`" `"mtu=1500`" `"fallback_dev=`" `"ping_check_host=`" `"ping_check_interval=`" `"ping_check_threshold=`" `"route_hint=`" `"dyndns_webresolver=`" ]"
+        # If zone doesn't exist:
+        Invoke-SSHCommand -SSHSession $SFISession -Command "interface zone new name `"$( $vlanName )`" interface `"$( $interface ).$( $vlanId )`""
+        Invoke-SSHCommand -SSHSession $SFISession -Command "interface zone new name `"firewall-$( $vlanName )`" interface `"$( $interface ).$( $vlanId )`" flags [ `"INTERFACE`" ]"
+
+        Invoke-SSHCommand -SSHSession $SFISession -Command "node new name `"$( $vlanName )-network`" address `"$( $interface ).$( $vlanId )`" zone `"$( $vlanName )`""
+        Invoke-SSHCommand -SSHSession $SFISession -Command "node new name `"$( $vlanName )-interface`" address `"$( $interface ).$( $vlanId )`" zone `"firewall-$( $vlanName )`""
+        Invoke-SSHCommand -SSHSession $SFISession -Command "interface address new device `"$( $interface ).$( $vlanId )`" address `"10.$( $siteId ).$( $vlanId ).$( $interfaceIpFourthOktett )/$( $subnetmaskSuffix )`""
+    }
+
+    end {
+        Write-Verbose 'Restarting services and saving changes...'
+
+        Invoke-SSHCommand -SSHSession $SFISession -Command "appmgmt restart application `"dhcpd`""
+        Invoke-SSHCommand -SSHSession $SFISession -Command "appmgmt restart application `"dhcprelay`""
+        Invoke-SSHCommand -SSHSession $SFISession -Command "appmgmt restart application `"named`""
+        Invoke-SSHCommand -SSHSession $SFISession -Command "appmgmt restart application `"openvpn`""
+        Invoke-SSHCommand -SSHSession $SFISession -Command "system config save"
+        Invoke-SSHCommand -SSHSession $SFISession -Command "system update interface"
+    }
 }
-if (Get-Module -Name Posh-SSH) {
-    Log "Found Posh-SSH. Starting..."
 
-    #endregion INITIALIZATION
-    #region DECLARATIONS
-    <#
-        Declare local variables and global variables
-    #>
+# TODO: make pipeline capable
+function Remove-SFIInterface {
+    [CmdletBinding()]
+    param (
+        [Parameter( Mandatory, ValueFromPipelineByPropertyName )]
+        [SSH.SshSession]
+        $SFISession,
 
-    $cred = Get-Credential
-    $s = New-SSHSession -ComputerName 192.168.175.1 -Credential $cred -AcceptKey
+        # E. g. "A1.10"
+        [Parameter( Mandatory, ValueFromPipelineByPropertyName )]
+        [string]
+        $InterfaceName
+    )
 
-    #endregion DECLARATIONS
-    #region FUNCTIONS
-    <# 
-        Declare Functions
-    #>
-
-    function Write-ConsoleLog {
-        <#
-        .SYNOPSIS
-        Logs an event to the console.
+    begin {
+        Write-Verbose "Deletion of interface $( $InterfaceName ):"
+        # Delete address from nodes/zones and thus unlink them from the interface before one can delete said interface:
+        $NodeTable = Invoke-SSHCommand -SSHSession $SFISession -Command "node get"
+        $Nodes = $NodeTable.Output.where({$_ -like "*$( $InterfaceName )*"})
         
-        .DESCRIPTION
-        Writes text to the console with the current date (US format) in front of it.
+        foreach ($n in $Nodes) {
+            $nId = $n.split('|')[0].trim()
+            $nName = $n.split('|')[1].trim()
+            $nAddress = $n.split('|')[2].trim()
+            $nZone = $n.split('|')[3].trim()
         
-        .PARAMETER Text
-        Event/text to be outputted to the console.
-        
-        .EXAMPLE
-        Write-ConsoleLog -Text 'Subscript XYZ called.'
-        
-        Long form
-        .EXAMPLE
-        Log 'Subscript XYZ called.
-        
-        Short form
-        #>
-        [alias('Log')]
-        [CmdletBinding()]
-        param (
-            [Parameter(Mandatory = $true,
-            Position = 0)]
-            [string]
-            $Text
-        )
+            Write-Verbose "Deletion of interface $( $InterfaceName ): Deleting node (node-ID = $( $nId ); node name = $( $nName ); node zone = $( $nZone ))..."
+            Invoke-SSHCommand -SSHSession $SFISession -Command "node set id `"$( $nId )`" name `"$( $nName )`" address `"`" zone `"$( $nZone )`""
+        }
 
-        # Save current VerbosePreference
-        $VerbosePreferenceBefore = $VerbosePreference
-
-        # Enable verbose output
-        $VerbosePreference = 'Continue'
-
-        # Write verbose output
-        Write-Verbose "$( Get-Date -Format 'MM/dd/yyyy HH:mm:ss' ) - $( $Text )"
-
-        # Restore current VerbosePreference
-        $VerbosePreference = $VerbosePreferenceBefore
+        # Delete the interface:
+        Write-Verbose "Deletion of interface $( $InterfaceName ): Deleting interface..."
+        Invoke-SSHCommand -SSHSession $SFISession -Command "interface delete name `"$( $InterfaceName )`""
     }
-
-    function Invoke-SFICommand {
-        # Abbreviation: SFI = Securepoint Firewall Interface
-        [CmdletBinding()]
-        [Alias('invoke')]
-        param (
-            [Parameter(
-                Mandatory = $false,
-                Position = 0
-            )]
-            [System.Object]
-            $Session,
-
-            [Parameter(Mandatory = $true, Position = 1)]
-            [string]
-            $Command
-        )
-
-        $return = Invoke-SSHCommand -SSHSession $session -Command $command
-
-        if ($return.ExitStatus -eq 0) {
-            return $true
-        } else {
-            return $false
-        }
+    
+    end {
+        # Restart Services and save config:
+        Write-Verbose 'Saving config...'
+        Invoke-SSHCommand -SSHSession $SFISession -Command "system config save"
+        Write-Verbose 'Updating interfaces...'
+        Invoke-SSHCommand -SSHSession $SFISession -Command "system update interface"
     }
+}
 
-    function Set-SFISettingsNetwork {
+# TODO: Write ITCE defaults function. eth0.MTU = 1484 (FRITZ!Box)!
+function Set-SFIInterface {
+    [CmdletBinding()]
+    param (
+        [Parameter(
+            Mandatory = $true,
+            ValueFromPipelineByPropertyName
+        )]
+        [SSH.SshSession]
+        $SFISession,
 
-        function Set-SFISettingsApplianceSettings {
+        [Parameter(
+            Mandatory = $true,
+            ValueFromPipelineByPropertyName
+        )]
+        [string]
+        $InterfaceName,
 
-            function Set-SFISettingsFirewall {  
-                [CmdletBinding()]
-                param (
-                    [Parameter(
-                        Mandatory = $false,
-                        Position = 0
-                    )]
-                    [string]
-                    $GlobalContactPerson = 'IT-Center Engels'
-                )
-                # NETWORK > APPLIANCE SETTINGS > APPLIANCE SETTINGS > FIREWALL > Global contact person:
-                invoke $s "extc global set variable `"GLOB_ADMIN_NAME`" value [ `"$APPLIANCESETTINGS_APPLIANCESETTINGS_GlobalContactPerson`" ]"
+        # TODO: Actually use this variable LOL
+        [Parameter(
+            Mandatory = $false,
+            ValueFromPipelineByPropertyName
+        )]
+        [integer]
+        $MTU = 1500,
 
-                # NETWORK > APPLIANCE SETTINGS > APPLIANCE SETTINGS > FIREWALL > Global email address:
-                invoke $s 'extc global set variable "GLOB_ADMIN_EMAIL" value [ "support@itc-engels.de" ]'
+        [Parameter(
+            Mandatory = $true,
+            ValueFromPipelineByPropertyName
+        )]
+        [ipaddress]
+        $IPAddress,
 
-                # NETWORK > APPLIANCE SETTINGS > APPLIANCE SETTINGS > FIREWALL > Report language:
-                invoke $s 'extc global set variable "GLOB_LANGUAGE" value [ "DE" ]'
-            }
-            
-            function Set-SFISettingsDNS {
-                # NETWORK > APPLIANCE SETTINGS > APPLIANCE SETTINGS > DNS SERVER > Check Nameserver prior to local cache:
-                invoke $s 'extc global set variable "GLOB_NAMESERVER_ASK_REMOTE_FIRST" value "1"'
+        [Parameter(
+            Mandatory = $true,
+            ValueFromPipelineByPropertyName
+        )]
+        [int]
+        [ValidateRange('1,31')]
+        $SubnetmaskSuffix
+    )
 
-                # NETWORK > APPLIANCE SETTINGS > APPLIANCE SETTINGS > DNS SERVER > Primary Nameserver >, Secondary Nameserver:
-                invoke $s 'extc global set variable "GLOB_NAMESERVER" value [ "8.8.8.8" "1.1.1.1" ]'
-            }
+    # Delete the old ip from the interface:
+    Invoke-SSHCommand -SSHSession $SFISession -Command "interface address delete id `"$( $id )`"" # TODO: Find out ID of IP addresses on interfaces or maybe just delete all ip addresses.
+    # Add the new ip to the interface:
+    Invoke-SSHCommand -SSHSession $SFISession -Command "interface address new device `"$( $InterfaceName )`" address `"$( $IPAddress )/$( $SubnetmaskSuffix )`""
+    
+    # Save and apply interface settings:
+    Invoke-SSHCommand -SSHSession $SFISession -Command "system config save"
+    Invoke-SSHCommand -SSHSession $SFISession -Command "system update interface"
+}
 
-            function Set-SFISettingsTimezone {
-                # NETWORK > APPLIANCE SETTINGS > APPLIANCE SETTINGS > TIME SETTINGS > Timezone:
-                invoke $s 'extc global set variable "GLOB_TIMEZONE" value [ "Europe/Berlin" ]'
+# TODO: function to delete portfilter groups and rules (e. g. the default ones)
 
-                # NETWORK > APPLIANCE SETTINGS > APPLIANCE SETTINGS > TIME SETTINGS > NTP Server:
-                invoke $s 'extc global set variable "GLOB_TIMEZONE" value [ "Europe/Berlin" ]'
-            }
+function New-SFIPortfilterGroup {
+    [CmdletBinding()]
+    param (
+        [Parameter(
+            Mandatory = $true,
+            ValueFromPipelineByPropertyName
+        )]
+        [SSH.SshSession]
+        $SFISession,
 
-            function Set-SFISettingsWebserver {
-                # NETWORK > APPLIANCE SETTINGS > APPLIANCE SETTINGS > WEBSERVER
-                # Coming soon
-            }
+        [Parameter(
+            Mandatory = $true,
+            ValueFromPipelineByPropertyName
+        )]
+        [int]
+        $ID,
 
-            function Set-SFISettingsAdvancedSettings {
-                # NETWORK > APPLIANCE SETTINGS > APPLIANCE SETTINGS > ADVANCED SETTINGS > Maximum Active Connections:
-                invoke $s 'extc value set application "securepoint_firewall" variable "IPCONNTRACK" value [ "0" ]'
+        [Parameter(
+            Mandatory = $true,
+            ValueFromPipelineByPropertyName
+        )]
+        [string]
+        $Name
+    )
 
-                # NETWORK > APPLIANCE SETTINGS > APPLIANCE SETTINGS > ADVANCED SETTINGS > Last Rule Logging:
-                invoke $s 'extc value set application "securepoint_firewall" variable "LASTRULE_LOGGING" value [ "1" ]'
-            }
+    Invoke-SSHCommand -SSHSession $SFISession -Command "rule group new name `"$( $name )`""
+    Invoke-SSHCommand -SSHSession $SFISession -Command "rule group set id `"$( $id )`" name `"$( $name )`""
+}
 
-            function Set-SFISettingsProxy {
-                # NETWORK > APPLIANCE SETTINGS > SYSTEM-WIDE PROXY > IP Address:
-                invoke $s 'extc global set variable "GLOB_HTTP_PARENT_PROXY_ADDR" value [ "" ]'
+# TODO: enable this function to work with pipeline input
+function New-SFINetworkObject {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)]
+        [SSH.SshSession]
+        $SFISession,
 
-                # NETWORK > APPLIANCE SETTINGS > SYSTEM-WIDE PROXY > Port:
-                # Coming soon
-                
-                # NETWORK > APPLIANCE SETTINGS > SYSTEM-WIDE PROXY > User:
-                # Coming soon
-                
-                # NETWORK > APPLIANCE SETTINGS > SYSTEM-WIDE PROXY > Password:
-                # Coming soon    
-            }
-                
-            function Set-SFISettingsAdministration {
-                # NETWORK > APPLIANCE SETTINGS > ADMINISTRATION:
-                invoke $s 'extc value set application "spresolverd" variable [ "MANAGER_HOST_LIST" ] value [ "centervision.spdns.de" ]'
-            }
-            
-            function Set-SFISettingsSyslog {
-                # NETWORK > APPLIANCE SETTINGS > SYSLOG > Log the UTM hostname in the syslog messages:
-                invoke $s 'extc value set application "syslog" variable "WRITE_HOST" value [ "0" ]'
-            }
-            
-            function Set-SFISettingsSNMP {
-                # NETWORK > APPLIANCE SETTINGS > SNMP > SNMP Version:
-                invoke $s 'extc value set application "snmpd" variable "ENABLE_SNMP_V1" value [ "0" ]'
+        [Parameter(Mandatory)]
+        [string]
+        $Name,
 
-                # NETWORK > APPLIANCE SETTINGS > SNMP > SNMP Version:
-                invoke $s 'extc value set application "snmpd" variable "ENABLE_SNMP_V2" value [ "0" ]'
+        [Parameter(Mandatory)]
+        [ipaddress]
+        $Address,
 
-                # NETWORK > APPLIANCE SETTINGS > SNMP > SNMP Version:
-                invoke $s 'extc value set application "snmpd" variable "ENABLE_SNMP_V3" value [ "0" ]'
-            }
+        [Parameter()]
+        [string]
+        $Zone = 'external'
+    )
+    
+    Invoke-SSHCommand -SSHSession $SFISession -Command "node new name `"$( $name )`" address `"$( $address )/32`" zone `"$( $zone )`""
+}
 
+function New-SFINetworkObjectGroup {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)]
+        [SSH.SshSession]
+        $SFISession,
+
+        [Parameter(Mandatory)]
+        [string]
+        $Name,
+
+        [Parameter()]
+        [string[]]
+        $Member
+    )
+
+    if ($Member) {
+        Invoke-SSHCommand -SSHSession $SFISession -Command "node group new name `"$( $name )`""
+        foreach ($m in $Member) {
+            Invoke-SSHCommand -SSHSession $SFISession -Command "node group add name `"$( $name )`" nodes `"$( $m )`""
         }
-
-        function Set-SFISettingsQos {
-            # NETWORK > QOS > NETWORK INTERFACES > GENERAL > Mode:
-            invoke $s 'extc global set variable "GLOB_QOS_MODE" value [ "auto" ]'
-            invoke $s 'extc global set variable "GLOB_QOS_INTERFACE" value [ "" ]'
-        }
-
+    } else {
+        Invoke-SSHCommand -SSHSession $SFISession -Command "node group new name `"$( $name )`""
     }
+}
 
-    function Set-SFISettingsApplications {
-        
-        function Set-STISettingsHttpProxy {
-            
-            # Applications > HTTP PROXY > GENERAL > Proxy Port:
-            invoke $s 'extc value set application "http_proxy" variable "PROXY_PORT" value [ "8080" ]'
+# Documentation for rules: https://wiki.securepoint.de/Rule_cli_v11
+# TODO: add parameter sets
+function New-SFIPortfilterRule {
+    [CmdletBinding()]
+    param (
+        [Parameter( Mandatory, ValueFromPipelineByPropertyName )]
+        [SSH.SshSession]
+        $SFISession,
 
-            # Applications > HTTP PROXY > GENERAL > Outgoing Address:
-            invoke $s 'extc value set application "http_proxy" variable "OUTGOING_ADDR" value [ "" ]'
+        [Parameter( Mandatory, ValueFromPipelineByPropertyName )]
+        [string]
+        $Group,
 
-            # Applications > HTTP PROXY > GENERAL > Forward requests to system-wide parent proxy:
-            invoke $s 'extc value set application "http_proxy" variable "ENABLE_FORWARD" value "0"'
+        [Parameter( Mandatory, ValueFromPipelineByPropertyName )]
+        [string]
+        $Source,
 
-            # Applications > HTTP PROXY > GENERAL > Authentication method:
-            invoke $s 'extc value set application "http_proxy" variable "ENABLE_AUTH_LOCAL" value "0"'
-            invoke $s 'extc value set application "http_proxy" variable "ENABLE_AUTH_RADIUS" value "0"'
-            invoke $s 'extc value set application "http_proxy" variable "ENABLE_AUTH_NTLM" value "0"'
-            invoke $s 'extc value set application "http_proxy" variable "ENABLE_AUTH_NTLM" value "0"'
+        [Parameter( Mandatory, ValueFromPipelineByPropertyName )]
+        [string]
+        $Destination = 'internet',
 
-            # Applications > HTTP PROXY > GENERAL > Allow access only from local sources:
-            invoke $s 'extc value set application "http_proxy" variable "RESTRICT_CLIENT_ACCESS" value [ "1" ]'
+        [Parameter( ValueFromPipelineByPropertyName )]
+        [string]
+        $Service = 'any',
 
-            # Applications > HTTP PROXY > GENERAL > Allow access to local destinations:
-            invoke $s 'extc value set application "http_proxy" variable "DENY_LOCAL_DESTINATIONS" value [ "0" ]'
+        # TODO: Solve parameter dependencies (regarding natting) via dynamic parameters: https://stackoverflow.com/questions/49805889/powershell-validateset-between-separate-parameter-sets-using-same-parameter
+        [Parameter()]
+        [string]
+        [ValidateSet('HIDENAT', 'HIDENAT_EXCLUDE', 'DESTNAT')]
+        $NatMode = 'HIDENAT',
 
-            # Applications > HTTP PROXY > GENERAL > IPv4 DNS lookups preferred:
-            invoke $s 'extc value set application "http_proxy" variable "ENABLE_DNS_V4FIRST" value "1"'
+        [Parameter()]
+        [string]
+        $NatNode = 'external-interface',
 
-            # Applications > HTTP PROXY > GENERAL > Logging (Syslog local):
-            # Applications > HTTP PROXY > GENERAL > Logging (Statistics):
-            invoke $s 'extc value set application "http_proxy" variable "ENABLE_LOGGING" value [ "0" ]'
+        [Parameter()]
+        [string]
+        $NatService,
 
-            # Applications > HTTP PROXY > Authentication exceptions:
-            invoke $s 'extc value set application "http_proxy" variable "ENABLE_EXCEPTION_URL_LIST" value "0"'
+        [Parameter()]
+        [string]
+        [ValidateSet('NONE', 'LOG_ALL', 'LOG')]
+        $LogLevel = 'LOG_ALL',
 
-            function Set-STISettingsTransparentMode {
-                # This only works after you have enabled SSL Interception!!
-                
-                
-            }
+        [Parameter()]
+        [string]
+        $Route = '',
 
-            function Set-STISettingsSslInterception {
-                # This only works after you have added a CA under certificate settings
+        [Parameter()]
+        [string]
+        $QOS = '',
 
-                # Applications > HTTP PROXY > TRANSPARENT MODE > Transparent Mode:
-                invoke $s 'extc value set application "http_proxy" variable "ENABLE_TRANSPARENT" value "1"'
+        [Parameter()]
+        [string]
+        $Timeprofile = '',
 
-                # Applications > HTTP PROXY > TRANSPARENT MODE > Add Transparent Rule:
-                invoke $s ''
-            }
+        [Parameter()]
+        [string]
+        $Comment = '',
+
+        [Parameter()]
+        [string]
+        [ValidateSet('accept')] # TODO
+        $Action = 'accept'
+    )
+
+    process {
+        switch ($LogLevel) {
+            'LOG_ALL' { $log = '"LOG_ALL" ' }
+            'LOG' { $log = '"LOG" ' }
+            'NONE' { $log = $null }
+        }
+    
+        switch ($action) {
+            'accept' { $actionText = '"ACCEPT" ' }
         }
 
-        function Set-STISettingsIdsIps {
-            [CmdletBinding()]
-            param (
-                [Parameter(
-                    Mandatory = $false,
-                    Position = 0
-                )]
-                [ValidateSet('Deactivate','Log','LogAndDrop')]
-                [string]
-                $CyberDefenseCloud = 'LogAndDrop'
-            )
+        $flags = ''
+        $flags += "`"$( $NatMode )`" "
+        $flags += $actionText
+        if ($log) { $flags += $log }
 
-            function Set-STISettingsCyberDefenseCloud {
-                [CmdletBinding()]
-                param (
-                    [Parameter(
-                        Mandatory = $false,
-                        Position = 0
-                    )]
-                    [ValidateSet('Deactivate','Log','LogAndDrop')]
-                    [string]
-                    $Status = 'LogAndDrop'
-                )
-                
-                # Applications > IDS / IPS > CYBER DEFENSE CLOUD > Threat Intelligence Filter > Log and drop connection:
-                switch ($status) {
-                    'Deactivate' {
-                        invoke $s 'rule implied group set implied_group "12" active "0"'
-                        invoke $s 'rule implied rule set implied_group "12" implied_rule "0" active "1"'
-                        invoke $s 'rule implied rule set implied_group "12" implied_rule "1" active "1"'
-                        invoke $s 'rule implied group set implied_group "13" active "0"'
-                        invoke $s 'rule implied rule set implied_group "13" implied_rule "0" active "0"'
-                        invoke $s 'rule implied rule set implied_group "13" implied_rule "1" active "0"'
-                    }
-                    'Log' {
-                        invoke $s 'rule implied group set implied_group "12" active "1"'
-                        invoke $s 'rule implied rule set implied_group "12" implied_rule "0" active "1"'
-                        invoke $s 'rule implied rule set implied_group "12" implied_rule "1" active "1"'
-                        invoke $s 'rule implied group set implied_group "13" active "0"'
-                        invoke $s 'rule implied rule set implied_group "13" implied_rule "0" active "0"'
-                        invoke $s 'rule implied rule set implied_group "13" implied_rule "1" active "0"'
-                    }
-                    'LogAndDrop' {
-                        invoke $s 'rule implied group set implied_group "12" active "0"'
-                        invoke $s 'rule implied rule set implied_group "12" implied_rule "0" active "1"'
-                        invoke $s 'rule implied rule set implied_group "12" implied_rule "1" active "1"'
-                        invoke $s 'rule implied group set implied_group "13" active "1"'
-                        invoke $s 'rule implied rule set implied_group "13" implied_rule "0" active "1"'
-                        invoke $s 'rule implied rule set implied_group "13" implied_rule "1" active "1"'
-                    }
-                }
-            }
+                  # rule new group "nicht einsortiert" src "internal-network" dst "internet" service "any" comment "" flags [ "LOG_ALL" "FULLCONENAT" "ACCEPT" ] nat_node "external-interface"
+                  # rule new group "clients" src "clients-network" dst "internet" service "any" comment "" flags [ "HIDENAT" "ACCEPT" ] nat_node "external-interface"
+                  # rule new group "Milon" src "milon-network" dst "milon-interface" service "any" comment "" flags [ "LOG_ALL" "ACCEPT" ]
+        $command = "rule new group `"$( $group )`" src `"$( $source )`" dst `"$( $destination )`" service `"$( $service )`" flags [$( $flags )] nat_node `"$( $NatNode )`""
 
-            Set-STISettingsCyberDefenseCloud -Status $CyberDefenseCloud
-        }
+        Write-Verbose 'Processing:'
+        Write-Verbose "group = $( $group )"
+        Write-Verbose "source = $( $source )"
+        Write-Verbose "destination = $( $destination )"
+        Write-Verbose "service = $( $service )"
+        Write-Verbose "route = $( $route )"
+        Write-Verbose "qos = $( $qos )"
+        Write-Verbose "timeprofile = $( $timeprofile )"
+        Write-Verbose "comment = $( $comment )"
+        Write-Verbose "flags = $( $flags )"
+        Write-Verbose "NatNode = $( $NatNode )"
+        Write-Verbose "Full command = $( $command )"
 
+        # TODO: This is way to long. Do Splatting or something.
+        Invoke-SSHCommand -SSHSession $SFISession -Command $command
     }
-
-    #endregion FUNCTIONS
-    #region EXECUTION
-    <# 
-        Function entry point
-    #>
-
-    Set-SFISettingsNetwork
-    Set-SFISettingsApplications
-
-    #endregion EXECUTION
+    
+    end {
+        Write-Verbose 'Applying changes...'
+        Invoke-SSHCommand -SSHSession $SFISession -Command  'system update rule'
     }
 }
