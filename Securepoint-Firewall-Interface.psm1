@@ -1,11 +1,12 @@
 # To import this Module: Import-Module .\Securepoint-Firewall-Interface.psd1
 
 # TODO:
-# More TODOs below (search for "# TODO").
+# More TODOs below (search for "TODO").
 # Add logging
 # Check if local IP is on 192.168.175.0/24 network
 # Add capability to load configuration files
 # Add function to check if default settings are set/settings are correct (check if cloud backup active)
+# Instead of just adding the return from invoke-sshcommand to the functions, I should check for errors and only return something fitting for each function
 
 # Manual Tasks:
 # Initial setup: assign license, name device, set date
@@ -478,37 +479,6 @@ function Set-SFIInterface {
     Invoke-SSHCommand -SSHSession $SFISession -Command "system update interface"
 }
 
-# TODO: function to delete portfilter groups and rules (e. g. the default ones)
-
-function New-SFIPortfilterGroup {
-    [CmdletBinding()]
-    param (
-        [Parameter(
-            Mandatory = $true,
-            ValueFromPipelineByPropertyName
-        )]
-        [SSH.SshSession]
-        $SFISession,
-
-        [Parameter(
-            Mandatory = $true,
-            ValueFromPipelineByPropertyName
-        )]
-        [int]
-        $ID,
-
-        [Parameter(
-            Mandatory = $true,
-            ValueFromPipelineByPropertyName
-        )]
-        [string]
-        $Name
-    )
-
-    Invoke-SSHCommand -SSHSession $SFISession -Command "rule group new name `"$( $name )`""
-    Invoke-SSHCommand -SSHSession $SFISession -Command "rule group set id `"$( $id )`" name `"$( $name )`""
-}
-
 # TODO: enable this function to work with pipeline input
 function New-SFINetworkObject {
     [CmdletBinding()]
@@ -557,6 +527,36 @@ function New-SFINetworkObjectGroup {
     } else {
         Invoke-SSHCommand -SSHSession $SFISession -Command "node group new name `"$( $name )`""
     }
+}
+
+# TODO: function to delete portfilter groups and rules (e. g. the default ones)
+function New-SFIPortfilterGroup {
+    [CmdletBinding()]
+    param (
+        [Parameter(
+            Mandatory = $true,
+            ValueFromPipelineByPropertyName
+        )]
+        [SSH.SshSession]
+        $SFISession,
+
+        [Parameter(
+            Mandatory = $true,
+            ValueFromPipelineByPropertyName
+        )]
+        [int]
+        $ID,
+
+        [Parameter(
+            Mandatory = $true,
+            ValueFromPipelineByPropertyName
+        )]
+        [string]
+        $Name
+    )
+
+    Invoke-SSHCommand -SSHSession $SFISession -Command "rule group new name `"$( $name )`""
+    Invoke-SSHCommand -SSHSession $SFISession -Command "rule group set id `"$( $id )`" name `"$( $name )`""
 }
 
 # Documentation for rules: https://wiki.securepoint.de/Rule_cli_v11
