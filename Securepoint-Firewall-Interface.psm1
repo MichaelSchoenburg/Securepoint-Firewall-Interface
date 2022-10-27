@@ -288,7 +288,7 @@ function Set-SFISettings {
 }
 
 # TODO: This must not contain any defaults from ITCE, thus the entire IP address has to be "adjustable"!
-function New-SFIVlan {
+function Add-SFIVlan {
     [CmdletBinding()]
     param (
         [Parameter(
@@ -480,7 +480,8 @@ function Set-SFIInterface {
 }
 
 # TODO: enable this function to work with pipeline input
-function New-SFINetworkObject {
+# I decided to call it NetworkObject instead of Node since it's primary use case is to create network objects (that's what their called in the UI anyway)
+function Add-SFINetworkObject {
     [CmdletBinding()]
     param (
         [Parameter(Mandatory)]
@@ -503,7 +504,7 @@ function New-SFINetworkObject {
     Invoke-SSHCommand -SSHSession $SFISession -Command "node new name `"$( $name )`" address `"$( $address )/32`" zone `"$( $zone )`""
 }
 
-function New-SFINetworkObjectGroup {
+function Add-SFINetworkObjectGroup {
     [CmdletBinding()]
     param (
         [Parameter(Mandatory)]
@@ -529,8 +530,59 @@ function New-SFINetworkObjectGroup {
     }
 }
 
+function Add-SFINetworkService {
+    [CmdletBinding()]
+    param (
+        [Parameter( Mandatory )]
+        [SSH.SshSession]
+        $SFISession,
+
+        [Parameter( Mandatory )]
+        [string]
+        $Name,
+
+        [Parameter( Mandatory )]
+        [string]
+        [ValidateSet('udp','tcp')]
+        $Protocol,
+
+        [Parameter( Mandatory )]
+        [string]
+        [Alias('DestPorts')]
+        [ValidatePattern('^\d{1,4}|\d{1,4}-\d{1,4}$')]
+        $DestinationPorts,
+
+        [Parameter( Mandatory )]
+        [string]
+        [Alias('SrcPorts')]
+        [ValidatePattern('^\d{1,4}|\d{1,4}-\d{1,4}$')]
+        $SourcePorts
+    )
+
+    Write-Verbose "Processing: name = $( $name ); protocol = $( $protocol ); DestPorts = $( $DestinationPorts ); SourcePorts = $( $SourcePorts )..."
+                                                      # service new name "3CX-SBC (udp)" proto "udp" ct_helper "" dst-ports [ "5090" ] src-ports [ ]
+                                                      # service new name "test" proto "tcp" ct_helper "" dst-ports [ "2-10" ] src-ports [ ]
+    # Invoke-SSHCommand -SSHSession $SFISession -Command "service new name `"$( $name )`" proto `"$( $protocol )`" ct_helper `"`" dst-ports [ `"$( $DestinationPorts )`" ] src-ports [ $( $SourcePorts ) ]"
+}
+
+# Remove-SFINetworkService -> service delete id "223"
+
+function Add-SFINetworkServiceGroup {
+    [CmdletBinding()]
+    param (
+        [Parameter( Mandatory )]
+        [SSH.SshSession]
+        $SFISession,
+
+        [Parameter( Mandatory )]
+        [string]
+        $Name
+    )
+    
+}
+
 # TODO: function to delete portfilter groups and rules (e. g. the default ones)
-function New-SFIPortfilterGroup {
+function Add-SFIPortfilterGroup {
     [CmdletBinding()]
     param (
         [Parameter(
@@ -561,7 +613,7 @@ function New-SFIPortfilterGroup {
 
 # Documentation for rules: https://wiki.securepoint.de/Rule_cli_v11
 # TODO: add parameter sets
-function New-SFIPortfilterRule {
+function Add-SFIPortfilterRule {
     [CmdletBinding()]
     param (
         [Parameter( Mandatory, ValueFromPipelineByPropertyName )]
@@ -587,7 +639,7 @@ function New-SFIPortfilterRule {
         # TODO: Solve parameter dependencies (regarding natting) via dynamic parameters: https://stackoverflow.com/questions/49805889/powershell-validateset-between-separate-parameter-sets-using-same-parameter
         [Parameter()]
         [string]
-        [ValidateSet('HIDENAT', 'HIDENAT_EXCLUDE', 'DESTNAT')]
+        [ValidateSet('HIDENAT', 'HIDENAT_EXCLUDE', 'DESTNAT', 'NONE')]
         $NatMode = 'HIDENAT',
 
         [Parameter()]
@@ -636,15 +688,18 @@ function New-SFIPortfilterRule {
             'accept' { $actionText = '"ACCEPT" ' }
         }
 
-        $flags = ''
-        $flags += "`"$( $NatMode )`" "
+        $flags = ' '
+        if ($NatMode -ne 'NONE') { $flags += "`"$( $NatMode )`" " }
         $flags += $actionText
         if ($log) { $flags += $log }
 
-                  # rule new group "nicht einsortiert" src "internal-network" dst "internet" service "any" comment "" flags [ "LOG_ALL" "FULLCONENAT" "ACCEPT" ] nat_node "external-interface"
+                  # rule new group "nicht einsortiert" src "( $name )-network" dst "internet" service "any" comment "" flags [ "LOG_ALL" "FULLCONENAT" "ACCEPT" ] nat_node "external-interface"
                   # rule new group "clients" src "clients-network" dst "internet" service "any" comment "" flags [ "HIDENAT" "ACCEPT" ] nat_node "external-interface"
                   # rule new group "Milon" src "milon-network" dst "milon-interface" service "any" comment "" flags [ "LOG_ALL" "ACCEPT" ]
-        $command = "rule new group `"$( $group )`" src `"$( $source )`" dst `"$( $destination )`" service `"$( $service )`" flags [$( $flags )] nat_node `"$( $NatNode )`""
+        $command = "rule new group `"$( $group )`" src `"$( $source )`" dst `"$( $destination )`" service `"$( $service )`" flags [$( $flags )]"
+        if ($natMode -ne 'NONE') {
+            $command += " nat_node `"$( $NatNode )`""
+        }
 
         Write-Verbose 'Processing:'
         Write-Verbose "group = $( $group )"
@@ -668,3 +723,90 @@ function New-SFIPortfilterRule {
         Invoke-SSHCommand -SSHSession $SFISession -Command  'system update rule'
     }
 }
+
+function Add-SFIDhcpPool {
+    [CmdletBinding()]
+    param (
+        [Parameter( 
+            Mandatory, 
+            ValueFromPipelineByPropertyName
+        )]
+        [SSH.SshSession]
+        $SFISession,
+
+        [Parameter(
+            Mandatory, 
+            ValueFromPipelineByPropertyName,
+            HelpMessage = 'Name of the DHCP pool.'
+        )]
+        [string]
+        $Name,
+
+        [Parameter(
+            Mandatory, 
+            ValueFromPipelineByPropertyName,
+            HelpMessage = 'First IP address in the DHCP pool.'
+        )]
+        [ipaddress]
+        $Start,
+        
+        [Parameter(
+            Mandatory, 
+            ValueFromPipelineByPropertyName,
+            HelpMessage = 'Last IP address in the DHCP pool.'
+        )]
+        [ipaddress]
+        $End,
+        
+        [Parameter(
+            Mandatory, 
+            ValueFromPipelineByPropertyName,
+            HelpMessage = 'Default Gateway (for all clients).'
+        )]
+        [ipaddress]
+        $DefaultGateway,
+        
+        [Parameter(
+            Mandatory, 
+            ValueFromPipelineByPropertyName,
+            HelpMessage = 'Define at most three Domain Name Server in order (for all clients).'
+        )]
+        [ipaddress[]]
+        [ValidateScript({$_.Count -lt 3})]
+        $DNS
+    )
+    
+    process {
+        Write-Verbose 'Processing:'
+        Write-Verbose "name = $( $name )"
+        Write-Verbose "start = $( $start )"
+        Write-Verbose "end = $( $end )"
+        Write-Verbose "defaultgateway = $( $defaultgateway )"
+        Write-Verbose "dns = $( $dns )"
+
+        Invoke-SSHCommand -SSHSession $SFISession -Command  "dhcp pool new name `"$( $name )`" start `"$( $start )`" end `"$( $end )`""
+        Invoke-SSHCommand -SSHSession $SFISession -Command  "dhcp option new pool `"$( $name )`" routers `"$( $defaultgateway )`""
+        Invoke-SSHCommand -SSHSession $SFISession -Command  "dhcp option new pool `"$( $name )`" domain-name-servers `"$( $dns[0] )`""
+        Invoke-SSHCommand -SSHSession $SFISession -Command  "dhcp option new pool `"$( $name )`" domain-name-servers `"$( $dns[1] )`""
+        Invoke-SSHCommand -SSHSession $SFISession -Command  "dhcp option new pool `"$( $name )`" domain-name-servers `"$( $dns[2] )`""
+        dhcp option new pool clients-network domain-name-servers 
+    }
+    
+    end {
+        Write-Verbose 'Applying changes...'
+        Invoke-SSHCommand -SSHSession $SFISession -Command  "appmgmt restart application `"dhcpd`""
+        Invoke-SSHCommand -SSHSession $SFISession -Command  "appmgmt restart application `"dhcprelay`""
+        Invoke-SSHCommand -SSHSession $SFISession -Command  "appmgmt restart application `"named`""
+        Invoke-SSHCommand -SSHSession $SFISession -Command  "appmgmt restart application `"openvpn`""
+        Invoke-SSHCommand -SSHSession $SFISession -Command  "system config save"
+    }
+}
+
+# Delete multiple rules:
+# for ($i = 0; $i -lt 27; $i++) {
+#     Invoke-SSHCommand -SSHSession $s -Command "rule delete id `"$i`""
+# }
+
+# Set default route:
+# route new src "" dst "0.0.0.0/0" router "A0"
+# route set id "1" src "" router "A0" dst "0.0.0.0/0" weight "0"
