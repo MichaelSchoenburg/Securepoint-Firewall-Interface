@@ -34,7 +34,7 @@ function New-SFISession {
             $IpAddress
         )
         
-        arp -d
+        arp -d # Löscht ARP Cache. Benötigt Admin-Rechte.
         $ping = Test-Connection -ComputerName $IpAddress -Count 3 -Quiet
         $arp = [boolean](arp -a | Select-String "$IpAddress")
 
