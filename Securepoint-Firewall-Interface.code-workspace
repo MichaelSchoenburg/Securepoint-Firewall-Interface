@@ -1,0 +1,13 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "..\\CenterVision-Defaults"
+		}
+	],
+	"settings": {
+		"powershell.cwd": "c:\\Users\\mschoenburg\\GIT\\Securepoint-Firewall-Interface"
+	}
+}
