@@ -802,6 +802,45 @@ function Add-SFIDhcpPool {
     }
 }
 
+function New-SFIDhcpReservation {
+    [CmdletBinding()]
+    param (
+        [Parameter( 
+            Mandatory, 
+            ValueFromPipelineByPropertyName
+        )]
+        [SSH.SshSession]
+        $SFISession,
+
+        [Parameter(
+            Mandatory, 
+            ValueFromPipelineByPropertyName,
+            HelpMessage = 'Name for the dhcp reservation (not the hostname).'
+        )]
+        [string]
+        $Name,
+
+        [Parameter(
+            Mandatory, 
+            ValueFromPipelineByPropertyName,
+            HelpMessage = 'MAC address of the device.'
+        )]
+        [string]
+        [ValidatePattern('^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$')]
+        $MacAddress,
+
+        [Parameter(
+            Mandatory, 
+            ValueFromPipelineByPropertyName,
+            HelpMessage = 'New IP address of the device.'
+        )]
+        [ipaddress]
+        $IpAddress
+    )
+    
+    Invoke-SSHCommand -SSHSession $SFISession -Command "dhcp lease new host `"$( $Name )`" ethernet `"$( $MacAddress )`" ip `"$( $IpAddress )`""
+}
+
 # Delete multiple rules:
 # for ($i = 0; $i -lt 27; $i++) {
 #     Invoke-SSHCommand -SSHSession $s -Command "rule delete id `"$i`""
