@@ -55,19 +55,19 @@ function New-SFISession {
         }
         elseif ($ping -and !$arp){
         return @{
-                ExitCode = 2
-                Comment = "Firewall is up, but possibly not on local subnet."
+                ExitCode = 1
+                Comment = "Firewall is up, but possibly not on local subnet. Continuing..."
             }
         }
         elseif (!$ping -and $arp){
             return @{
-                ExitCode = 3
+                ExitCode = 2
                 Comment = "Firewall not reachable. Possible Cause: Windows Firewall is blocking traffic."
             }
         }
         else{
             return @{
-                ExitCode = 1
+                ExitCode = 3
                 Comment = "Firewall is down."
             }
         }
@@ -83,10 +83,10 @@ function New-SFISession {
     }
 
     $Test = Test-SFIConnection -IpAddress $IpAddress
-    if ($Test.ExitCode -ne 0) {
-        throw "Can't connect to Securepoint firewall at $( $IpAddress ). Test result: $( $Test.Comment )" # Function will terminate
+    if (@(0, 1) -contains $Test.ExitCode) {
+        Write-Verbose "Firewall is reachable at $( $IpAddress ). Test result: $( $Test.Comment )"
     } else {
-        Write-Verbose "Firewall is reachable at $( $IpAddress )."
+        throw "Can't connect to Securepoint firewall at $( $IpAddress ). Test result: $( $Test.Comment )" # Function will terminate
     }
 
     $cred = Get-Credential
