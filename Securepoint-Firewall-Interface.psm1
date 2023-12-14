@@ -17,10 +17,19 @@ function New-SFISession {
     param (
         [Parameter(
             Mandatory,
+            ParameterSetName = 'Ip',
             Position = 0
             )]
         [ipaddress]
-        $IpAddress
+
+        $IpAddress,
+        [Parameter(
+            Mandatory,
+            ParameterSetName = 'Fqdn',
+            Position = 0
+            )]
+        [string]
+        $Fqdn
     )
 
     # Source of inspiration: https://sid-500.com/2017/12/09/powershell-find-out-whether-a-host-is-really-down-or-not-with-test-connectionlocalsubnet-ping-arp/
@@ -61,6 +70,15 @@ function New-SFISession {
                 ExitCode = 1
                 Comment = "Firewall is down."
             }
+        }
+    }
+
+    if ($fqdn) {
+        try {
+            $IpAddress = (Resolve-DnsName -Name $Fqdn).IPAddress
+        }
+        catch {
+            throw "Couldn't resolve the FQDN '$($Fqdn)' to IP-Address. $($_)"
         }
     }
 
