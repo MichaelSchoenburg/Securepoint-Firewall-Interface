@@ -189,7 +189,7 @@ function Set-SFISettings {
     Invoke-SSHCommand -SSHSession $SFISession -Command 'extc global set variable "GLOB_TIMEZONE" value [ "Europe/Berlin" ]'
 
     # NETWORK > APPLIANCE SETTINGS > APPLIANCE SETTINGS > TIME SETTINGS > NTP Server:
-    Invoke-SSHCommand -SSHSession $SFISession -Command 'extc global set variable "GLOB_TIMEZONE" value [ "Europe/Berlin" ]'
+    # Invoke-SSHCommand -SSHSession $SFISession -Command 'extc global set variable "GLOB_TIMEZONE" value [ "Europe/Berlin" ]'
 
     # NETWORK > APPLIANCE SETTINGS > APPLIANCE SETTINGS > WEBSERVER
     # Coming soon
@@ -867,3 +867,37 @@ function New-SFIDhcpReservation {
 # Set default route:
 # route new src "" dst "0.0.0.0/0" router "A0"
 # route set id "1" src "" router "A0" dst "0.0.0.0/0" weight "0"
+
+function Get-Rule {
+    [CmdletBinding()]
+    param (
+        [Parameter( 
+            Mandatory, 
+            ValueFromPipelineByPropertyName
+        )]
+        [SSH.SshSession]
+        $SFISession,
+
+        [Parameter()]
+        [int]
+        $Id
+    )
+    
+    $Return = Invoke-SSHCommand -SSHSession $SFISession -Command "rule get"
+    if ($Return.ExitStatus -ne 0) {
+        throw "Error. $($_)"
+    } else {
+        $OutputRaw = $Return.Output
+        $OutputParsed = $OutputRaw[2..$OutputRaw.Count] | ConvertFrom-Csv -Delimiter '|' -Header Pos, Group, Id, Source, Destination, Service, NatNode, NatService, Flags, TimeProfile, Qos, AppLayer, Log, Route, Comment
+        # Aufgabe: Über den Array iterieren, alle Elemente trimmen und in einen neuen Array einfügen
+        $OutputTrimmed = @()
+        foreach ($element in $OutputParsed) {
+            $element.Group
+            "'$($element.Group)'"
+            $s = $element.Group.TrimEnd()
+            $element.Group = $s
+        }
+        $OutputTrimmed | FT
+        # $element = $OutputParsed.Where({$_.id -eq 330})
+    }
+}
